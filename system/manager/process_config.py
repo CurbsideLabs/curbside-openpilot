@@ -49,6 +49,12 @@ def long_maneuver(started: bool, params: Params, CP: car.CarParams) -> bool:
 def not_long_maneuver(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and not params.get_bool("LongitudinalManeuverMode")
 
+def demo_script(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return started and params.get_bool("DemoScriptMode")
+
+def not_demo_script(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return started and not params.get_bool("DemoScriptMode")
+
 def qcomgps(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and not ublox_available()
 
@@ -144,8 +150,10 @@ procs = [
   PythonProcess("lagd", "selfdrive.locationd.lagd", only_onroad),
   PythonProcess("ubloxd", "system.ubloxd.ubloxd", ublox, enabled=TICI),
   PythonProcess("pigeond", "system.ubloxd.pigeond", ublox, enabled=TICI),
-  PythonProcess("plannerd", "selfdrive.controls.plannerd", not_long_maneuver),
-  PythonProcess("maneuversd", "tools.longitudinal_maneuvers.maneuversd", long_maneuver),
+  PythonProcess("plannerd", "selfdrive.controls.plannerd", and_(not_long_maneuver, not_demo_script)),
+  PythonProcess("maneuversd", "tools.longitudinal_maneuvers.maneuversd", and_(long_maneuver, not_demo_script)),
+  PythonProcess("demod", "tools.demo.demod", demo_script),
+  PythonProcess("demoweb", "tools.demo.web", demo_script),
   PythonProcess("radard", "selfdrive.controls.radard", only_onroad),
   PythonProcess("hardwared", "system.hardware.hardwared", always_run),
   PythonProcess("tombstoned", "system.tombstoned", always_run, enabled=not PC),

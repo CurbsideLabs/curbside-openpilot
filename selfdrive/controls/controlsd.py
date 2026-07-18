@@ -43,13 +43,14 @@ class Controls(ControlsExt):
 
     self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
                                    'liveCalibration', 'livePose', 'longitudinalPlan', 'carState', 'carOutput',
-                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveDelay'] + self.sm_services_ext,
+                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveDelay', 'demoControl'] + self.sm_services_ext,
                                   poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState'] + self.pm_services_ext)
 
     self.steer_limited_by_safety = False
     self.curvature = 0.0
     self.desired_curvature = 0.0
+    self.demo_lat_latched = False
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -134,6 +135,23 @@ class Controls(ControlsExt):
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage
     new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
+
+    # Curbside demo: when demod is running a scripted lateral maneuver, substitute its
+    # curvature for the model's. Everything downstream (clip_curvature rate limits, the
+    # closed-loop torque controller, and panda safety) stays exactly the same.
+    demo = self.sm['demoControl']
+    demo_alive = self.sm.alive['demoControl'] and self.sm.valid['demoControl']
+    if CC.latActive and demo_alive and demo.active:
+      new_desired_curvature = demo.desiredCurvature
+      self.demo_lat_latched = True
+    elif CC.latActive and self.demo_lat_latched and not demo_alive:
+      # demod died mid-maneuver: hold the current curvature (a predictable arc) instead of
+      # snapping back to the model's lane-recentering path; selfdrived's commIssue from the
+      # stale longitudinalPlan soft-disables moments later
+      new_desired_curvature = self.desired_curvature
+    else:
+      # demod finished/released (alive with active=False), demo mode off, or not latActive
+      self.demo_lat_latched = False
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 

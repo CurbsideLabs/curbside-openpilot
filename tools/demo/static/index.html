@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Curbside Demo</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body {
+      margin: 0; font-family: -apple-system, system-ui, sans-serif;
+      background: #0d0f12; color: #f2f4f7; min-height: 100vh;
+      display: flex; flex-direction: column; gap: 14px; padding: 18px;
+    }
+    h1 { font-size: 20px; margin: 0 0 4px; font-weight: 600; letter-spacing: .5px; }
+    .status {
+      background: #171a1f; border: 1px solid #262b33; border-radius: 14px; padding: 16px;
+    }
+    .state { font-size: 28px; font-weight: 700; }
+    .state.EXECUTING { color: #4ade80; }
+    .state.ARMED { color: #fbbf24; }
+    .state.ABORT { color: #f87171; }
+    .state.DONE, .state.IDLE { color: #9ca3af; }
+    .meta { margin-top: 8px; font-size: 15px; color: #b6bcc6; line-height: 1.6; }
+    .fault { color: #f87171; font-weight: 600; min-height: 20px; }
+    .bar { height: 10px; background: #262b33; border-radius: 6px; margin-top: 12px; overflow: hidden; }
+    .bar > div { height: 100%; width: 0; background: #4ade80; transition: width .2s ease; }
+    button {
+      border: none; border-radius: 14px; padding: 22px; font-size: 20px; font-weight: 700;
+      color: #fff; width: 100%; touch-action: manipulation;
+    }
+    .grid { display: flex; flex-direction: column; gap: 12px; }
+    .go { background: #2563eb; }
+    .curb { background: #7c3aed; }
+    .out { background: #0891b2; }
+    .abort { background: #dc2626; padding: 30px; font-size: 26px; letter-spacing: 1px; margin-top: auto; }
+    button:active { filter: brightness(1.25); }
+    .row { display: flex; align-items: center; gap: 10px; font-size: 15px; color: #b6bcc6; }
+    input[type=range] { flex: 1; }
+    .val { min-width: 62px; text-align: right; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div>
+    <h1>CURBSIDE DEMO</h1>
+    <div class="status">
+      <div id="state" class="state IDLE">IDLE</div>
+      <div class="meta">
+        <div id="progress">0 / 0 ft &middot; 0.0 mph</div>
+        <div id="kind">ready</div>
+      </div>
+      <div class="bar"><div id="barfill"></div></div>
+      <div class="fault" id="fault"></div>
+    </div>
+  </div>
+
+  <div class="row">
+    Token <input id="token" type="password" placeholder="X-Demo-Token" style="flex:1; padding:8px; border-radius:8px; border:1px solid #262b33; background:#171a1f; color:#f2f4f7;">
+  </div>
+  <div class="row">
+    Speed <input id="speed" type="range" min="2" max="15" step="1" value="5">
+    <span class="val"><span id="speedval">5</span> mph</span>
+  </div>
+  <div class="row">
+    Distance <input id="dist" type="range" min="10" max="150" step="5" value="50">
+    <span class="val"><span id="distval">50</span> ft</span>
+  </div>
+
+  <div class="grid">
+    <button class="go"   onclick="cmd('/demo/forward',  {distance_ft: dist.value})">FORWARD</button>
+    <button class="curb" onclick="cmd('/demo/pullover', {travel_ft: dist.value})">PULL OVER</button>
+    <button class="out"  onclick="cmd('/demo/pullout',  {forward_ft: dist.value})">PULL OUT</button>
+  </div>
+
+  <button class="abort" onclick="cmd('/abort', {})">ABORT</button>
+
+  <script>
+    const speed = document.getElementById('speed');
+    const dist = document.getElementById('dist');
+    const token = document.getElementById('token');
+    speed.oninput = () => speedval.textContent = speed.value;
+    dist.oninput = () => distval.textContent = dist.value;
+    token.value = localStorage.getItem('demoToken') || '';
+    token.onchange = () => localStorage.setItem('demoToken', token.value);
+
+    let cmdId = null;  // active command; its heartbeat keeps demod's watchdog fed
+
+    async function post(path, body) {
+      const r = await fetch(path, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-Demo-Token': token.value},
+        body: JSON.stringify(body),
+      });
+      if (r.status === 401) document.getElementById('fault').textContent = 'bad auth token';
+      return r.json();
+    }
+
+    async function cmd(path, body) {
+      body.cruise_mph = Number(speed.value);
+      try {
+        const resp = await post(path, body);
+        cmdId = path === '/abort' ? null : (resp.cmd_id ?? null);
+      } catch (e) { /* ignore transient errors; status poll will recover */ }
+    }
+
+    // watchdog heartbeat: only while we own an active command (1 s < demod's 3 s timeout)
+    setInterval(async () => {
+      if (cmdId === null) return;
+      try { await post('/heartbeat', {cmd_id: cmdId}); } catch (e) { /* demod aborts if we stay silent */ }
+    }, 1000);
+
+    async function poll() {
+      try {
+        const r = await fetch('/status');
+        const s = await r.json();
+        const st = s.state || 'IDLE';
+        const el = document.getElementById('state');
+        el.textContent = st;
+        el.className = 'state ' + st;
+        document.getElementById('progress').textContent =
+          `${(s.odo_ft ?? 0)} / ${(s.target_ft ?? 0)} ft · ${(s.v_mph ?? 0)} mph`;
+        document.getElementById('kind').textContent = s.kind || 'ready';
+        document.getElementById('fault').textContent = s.fault || '';
+        const pct = s.target_ft > 0 ? Math.min(100, 100 * (s.odo_ft / s.target_ft)) : 0;
+        document.getElementById('barfill').style.width = pct + '%';
+      } catch (e) { /* device unreachable */ }
+    }
+    setInterval(poll, 500);
+    poll();
+  </script>
+</body>
+</html>
