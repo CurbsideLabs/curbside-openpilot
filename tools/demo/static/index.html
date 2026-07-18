@@ -33,6 +33,11 @@
     .go { background: #2563eb; }
     .curb { background: #7c3aed; }
     .out { background: #0891b2; }
+    .lane { background: #059669; }
+    .turn { background: #b45309; }
+    .stop { background: #d97706; }
+    .pair { display: flex; gap: 12px; }
+    .pair > button { flex: 1; }
     .abort { background: #dc2626; padding: 30px; font-size: 26px; letter-spacing: 1px; margin-top: auto; }
     button:active { filter: brightness(1.25); }
     .row { display: flex; align-items: center; gap: 10px; font-size: 15px; color: #b6bcc6; }
@@ -58,7 +63,7 @@
     Token <input id="token" type="password" placeholder="X-Demo-Token" style="flex:1; padding:8px; border-radius:8px; border:1px solid #262b33; background:#171a1f; color:#f2f4f7;">
   </div>
   <div class="row">
-    Speed <input id="speed" type="range" min="2" max="15" step="1" value="5">
+    Speed <input id="speed" type="range" min="2" max="30" step="1" value="5">
     <span class="val"><span id="speedval">5</span> mph</span>
   </div>
   <div class="row">
@@ -70,6 +75,15 @@
     <button class="go"   onclick="cmd('/demo/forward',  {distance_ft: dist.value})">FORWARD</button>
     <button class="curb" onclick="cmd('/demo/pullover', {travel_ft: dist.value})">PULL OVER</button>
     <button class="out"  onclick="cmd('/demo/pullout',  {forward_ft: dist.value})">PULL OUT</button>
+    <div class="pair">
+      <button class="lane" onclick="cmd('/demo/lanechange', {direction: 'left'})">&#9664; LANE</button>
+      <button class="lane" onclick="cmd('/demo/lanechange', {direction: 'right'})">LANE &#9654;</button>
+    </div>
+    <div class="pair">
+      <button class="turn" onclick="cmd('/demo/turn', {direction: 'left'})">&#9664; TURN</button>
+      <button class="turn" onclick="cmd('/demo/turn', {direction: 'right'})">TURN &#9654;</button>
+    </div>
+    <button class="stop" onclick="cmd('/demo/stop', {})">STOP</button>
   </div>
 
   <button class="abort" onclick="cmd('/abort', {})">ABORT</button>

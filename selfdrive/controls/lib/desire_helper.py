@@ -38,6 +38,36 @@ TURN_DESIRES = {
   TurnDirection.turnRight: log.Desire.turnRight,
 }
 
+# Curbside demo (tools/demo): virtual blinkers for WiFi-commanded desires. This injects *intent*
+# only — every gate in DesireHelper (lateral_active, lane-change speed minimum, blind-spot block,
+# AutoLaneChange mode, LaneTurnDesire speed ceiling) applies to a virtual blinker exactly as to a
+# physical one.
+DEMO_DESIRE_BLINKERS = {
+  "laneChangeLeft": (True, False),
+  "laneChangeRight": (False, True),
+  "turnLeft": (True, False),
+  "turnRight": (False, True),
+}
+
+
+class _VirtualBlinkerCarState:
+  """Read-only carState view with a virtual blinker OR'd in; everything else delegates."""
+
+  def __init__(self, carstate, left: bool, right: bool):
+    self._carstate = carstate
+    self.leftBlinker = carstate.leftBlinker or left
+    self.rightBlinker = carstate.rightBlinker or right
+
+  def __getattr__(self, name):
+    return getattr(self._carstate, name)
+
+
+def apply_demo_desire(carstate, desire: str):
+  blinkers = DEMO_DESIRE_BLINKERS.get(desire)
+  if blinkers is None:
+    return carstate
+  return _VirtualBlinkerCarState(carstate, *blinkers)
+
 
 class DesireHelper:
   def __init__(self):

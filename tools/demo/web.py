@@ -92,10 +92,10 @@ def _num(body: dict, key: str) -> float | None:
   return v
 
 
-def _motion_command(kind: str, body: dict, keys: list[str]) -> 'web.Response':
+def _motion_command(kind: str, body: dict, keys: list[str], extra: dict | None = None) -> 'web.Response':
   global _active_cmd_id
   # pass through only the keys the client provided — demod owns the defaults
-  cmd: dict = {"type": kind}
+  cmd: dict = {"type": kind, **(extra or {})}
   for key in keys:
     v = _num(body, key)
     if v is not None:
@@ -133,6 +133,32 @@ async def pullover(request: 'web.Request'):
 
 async def pullout(request: 'web.Request'):
   return _motion_command("pullout", await _json(request), ["forward_ft", "offset_ft", "runout_ft", "cruise_mph"])
+
+
+def _direction(body: dict) -> str:
+  d = body.get("direction")
+  if d not in ("left", "right"):
+    raise web.HTTPBadRequest(text=json.dumps({"error": "direction must be 'left' or 'right'"}),
+                             content_type="application/json")
+  return d
+
+
+async def lanechange(request: 'web.Request'):
+  body = await _json(request)
+  return _motion_command("lanechange", body, ["cruise_mph"], extra={"direction": _direction(body)})
+
+
+async def turn(request: 'web.Request'):
+  body = await _json(request)
+  return _motion_command("turn", body, ["cruise_mph", "hold_s"], extra={"direction": _direction(body)})
+
+
+async def stop(request: 'web.Request'):
+  global _active_cmd_id
+  _send_command({"type": "stop"})
+  _active_cmd_id = None
+  _beat()
+  return web.json_response({"status": "ok"})
 
 
 async def heartbeat(request: 'web.Request'):
@@ -173,6 +199,9 @@ def main():
   app.router.add_post("/demo/forward", forward)
   app.router.add_post("/demo/pullover", pullover)
   app.router.add_post("/demo/pullout", pullout)
+  app.router.add_post("/demo/lanechange", lanechange)
+  app.router.add_post("/demo/turn", turn)
+  app.router.add_post("/demo/stop", stop)
   app.router.add_post("/heartbeat", heartbeat)
   app.router.add_post("/abort", abort)
   app.router.add_static('/static', f"{DEMODIR}/static")

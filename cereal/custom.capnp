@@ -459,8 +459,9 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
 struct DemoControl @0xcb9fd56c7057593a {
   active @0 :Bool;            # when true, controlsd uses desiredCurvature below instead of the model
   desiredCurvature @1 :Float32;
-  state @2 :Text;            # demod state machine name (IDLE/ARMED/EXECUTING/DONE/ABORT)
+  state @2 :Text;            # demod state machine name (IDLE/ARMED/EXECUTING/CRUISE/STOPPING/DONE/ABORT)
   odometer @3 :Float32;      # meters travelled since the current maneuver started
+  desire @4 :Text;           # injected model desire: "" | laneChangeLeft | laneChangeRight | turnLeft | turnRight
 }
 
 struct CustomReserved11 @0xc2243c65e0340384 {

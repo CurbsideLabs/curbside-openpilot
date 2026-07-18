@@ -16,6 +16,7 @@ Touch-points in the rest of the tree:
 - `common/params_keys.h` — `DemoScriptMode`, `DemoCommand`, `DemoStatus`, `DemoHeartbeat`, `DemoAuthToken`.
 - `system/manager/process_config.py` — gates plannerd off and demod/demoweb on when `DemoScriptMode` is set. `DemoScriptMode` takes precedence over `LongitudinalManeuverMode` (maneuversd will not start while demo mode is on — exactly one longitudinalPlan publisher at a time).
 - `selfdrive/controls/controlsd.py` — small override: while `demoControl.active`, use its curvature instead of the model's. If demod dies mid-maneuver the current curvature is held (predictable arc) until selfdrived's commIssue disengages, rather than silently snapping back to the model's path. Curvature rate limits, the torque controller, and panda safety are untouched.
+- `selfdrive/controls/lib/desire_helper.py` + the three modeld variants — Plan 2 desire injection: `demoControl.desire` is OR'd in as a **virtual blinker** before `DesireHelper.update`, so lane changes and turns are executed by the driving model with every existing gate (lateral active, speed window, blind-spot block, AutoLaneChange mode, LaneTurnDesire ceiling) applying unchanged.
 
 ## Lateral behavior
 
@@ -46,9 +47,20 @@ use demod's defaults (`DEFAULT_*` in `demod.py` — the single source of truth).
 | `POST /demo/forward` | `{distance_ft, cruise_mph}` | Drive forward N feet (model steering), stop. |
 | `POST /demo/pullover` | `{travel_ft, offset_ft, runout_ft, cruise_mph}` | Forward on model steering, then S-curve to the curb, stop. |
 | `POST /demo/pullout` | `{forward_ft, offset_ft, runout_ft, cruise_mph}` | S-curve away from the curb, then forward on model steering, stop. |
+| `POST /demo/lanechange` | `{direction, cruise_mph}` | **Model-executed** lane change (Plan 2): demod holds cruise speed and injects the desire as a virtual blinker; the driving model plans and steers the change with all gates (≥21 mph, blind spot, ALC mode) intact. Ends in CRUISE. |
+| `POST /demo/turn` | `{direction, hold_s, cruise_mph}` | **Model-executed** turn via sunnypilot LaneTurnDesire: desire held for `hold_s` (default 8 s) at low speed; the model executes. Ends in CRUISE. |
+| `POST /demo/stop` | — | Graceful controlled stop (no fault) — ends a CRUISE. |
 | `POST /heartbeat` | `{cmd_id}` | Watchdog keep-alive for the **active** command (see below). |
-| `POST /abort` | — | Immediate controlled stop. |
+| `POST /abort` | — | Immediate controlled stop, recorded as an abort. |
 | `GET /status` | — | State machine + odometry + faults. Read-only; does **not** feed the watchdog. |
+
+**Model-executed maneuver prerequisites** (rejected with guidance otherwise): lane changes need
+nudgeless auto-lane-change (`Params().put("AutoLaneChangeTimer", "1")`); turns need
+`Params().put_bool("LaneTurnDesire", True)` (plus `LaneTurnValue` ≥ the turn cruise speed).
+Desire maneuvers end in a **CRUISE** state — speed held, model steering — so maneuvers can be
+chained; send `/demo/stop` (or the next command) to continue. **Clear-road assumption:** demod has
+no car-following; the headway-scaled lead abort (~1 s) is a backstop, not ACC — run these on an
+empty road.
 
 Motion commands return `{"status": "ok", "cmd_id": N}`. **Watchdog contract:** the commanding
 client must POST `/heartbeat {"cmd_id": N}` at least every ~1 s until the maneuver reaches

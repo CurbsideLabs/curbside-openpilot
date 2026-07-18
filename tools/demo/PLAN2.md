@@ -1,5 +1,9 @@
 # Curbside Demo — Plan 2: Real-Autonomy Extensions
 
+> **Status (2026-07-18):** W1 (desire injection), W2 (lane change), and W3 (turns) are implemented —
+> see `README.md` for endpoints, prerequisites, and the CRUISE/stop chaining semantics. W2/W3 need
+> on-car validation. W4 (mission executor) and W5 (AI integration) are not started.
+
 Second-phase plan. Builds on the primitives, daemon, and HTTP API from [PLAN.md](PLAN.md) (Phases 0–5). Where Plan 1 delivers deterministic *scripted* motions (pull out, forward N meters, pull over), this plan replaces hardcoded motion with the driving model's own perception and execution wherever the stack genuinely supports it, and composes everything into longer missions.
 
 **Goal:** demos that are honestly "real autonomy" — the model perceives and executes; our layer (and eventually the AI planner) only makes decisions.
