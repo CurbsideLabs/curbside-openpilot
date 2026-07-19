@@ -166,8 +166,13 @@ class DemoClient:
     return self._request("GET", "/status")
 
   def wait(self, stop_states: tuple = TERMINAL_STATES + CRUISE_STATES,
-           poll_s: float = 0.5, on_status=None) -> dict:
+           poll_s: float = 0.5, on_status=None, min_seq: int | None = None) -> dict:
     """Block until demod reaches one of stop_states; returns the final status dict.
+
+    min_seq: ignore status snapshots from before that command was consumed — demod
+    republishes ~250 ms after a command lands, so the first polls can race it and
+    show the PREVIOUS maneuver's final state (a stale IDLE would end the wait
+    instantly while the new command sits ARMED on the car).
 
     CRUISE counts as done by default (a completed lane change / turn parks there,
     speed held) — chain the next command or call stop(). The heartbeat keeps
@@ -179,6 +184,9 @@ class DemoClient:
         st = self.status()
       except DemoClientError:
         time.sleep(poll_s)
+        continue
+      if min_seq is not None and st.get("seq", 0) < min_seq:
+        time.sleep(poll_s)  # stale snapshot from before our command — not ours to act on
         continue
       if on_status:
         on_status(st)
@@ -208,12 +216,12 @@ def _run_motion(client: DemoClient, start):
   cmd_id = start()
   print(f"command accepted (cmd_id={cmd_id}); heartbeating — Ctrl-C for graceful stop")
   try:
-    final = client.wait(on_status=_print_status)
+    final = client.wait(on_status=_print_status, min_seq=cmd_id)
     print()
     state = final.get("state")
     if state in CRUISE_STATES:
       print("maneuver complete, holding CRUISE — heartbeat continues; Ctrl-C (or `stop`) to stop the car")
-      final = client.wait(stop_states=TERMINAL_STATES, on_status=_print_status)
+      final = client.wait(stop_states=TERMINAL_STATES, on_status=_print_status, min_seq=cmd_id)
       print()
     print(f"final: {json.dumps(final)}")
     return 0 if final.get("state") != "ABORT" else 1

@@ -562,6 +562,7 @@ class DemoController:
   def status(self, v_ego: float) -> dict:
     m = self.maneuver
     return {
+      "seq": self.last_seq,  # lets clients ignore status snapshots older than their command
       "state": self.state.value,
       "kind": m.kind if m else "",
       "desire": m.desire if m and self.state == State.EXECUTING and m.is_desire else "",
