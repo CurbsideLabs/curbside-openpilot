@@ -54,9 +54,9 @@ M_TO_FT = 1.0 / FT_TO_M
 LaneChangeState = log.LaneChangeState
 
 # Hard safety caps (never exceeded regardless of the command).
-MAX_SPEED_MS = 15.0 * CV.MPH_TO_MS      # scripted (lot) maneuvers
+MAX_SPEED_MS = 30.0 * CV.MPH_TO_MS      # scripted maneuvers (street speed; lat accel checks scale with v)
 MAX_DESIRE_SPEED_MS = 30.0 * CV.MPH_TO_MS  # model-executed street maneuvers (lane change needs >=20)
-MAX_DISTANCE_M = 300.0 * FT_TO_M        # per-command travel cap for scripted maneuvers
+MAX_DISTANCE_M = 2000.0 * FT_TO_M       # per-command travel cap for scripted maneuvers (~610 m)
 # Peak scripted curvature cap, with margin under controlsd's MAX_CURVATURE=0.2 clamp
 # (drive_helpers.py) so the torque controller can actually track the scripted path and the
 # S-curve integrates back to zero heading. Commands whose geometry needs more are rejected.
@@ -226,8 +226,11 @@ def build_maneuver(cmd: dict) -> tuple[Maneuver | None, str]:
 
   # validate S-curves against the MEASURED steering-authority ceiling, not the theoretical
   # clamp — geometry the EPS can't track just undershoots the offset and weaves
+  def s_curve_peak_k(offset_m: float, runout_m: float) -> float:
+    return abs(2.0 * np.pi * offset_m) / (runout_m ** 2)
+
   def s_curve_ok(offset_m: float, runout_m: float) -> bool:
-    return abs(2.0 * np.pi * offset_m) / (runout_m ** 2) <= ARC_AUTHORITY_CURVATURE
+    return s_curve_peak_k(offset_m, runout_m) <= ARC_AUTHORITY_CURVATURE
 
   hold_straight = bool(cmd.get("hold_straight", False))
 
@@ -248,6 +251,11 @@ def build_maneuver(cmd: dict) -> tuple[Maneuver | None, str]:
     if not s_curve_ok(offset, runout):
       return None, (f"offset too sharp to track (steering authority): need runout >= "
                     f"{math.sqrt(2.0 * np.pi * abs(offset) / ARC_AUTHORITY_CURVATURE) * M_TO_FT:.0f} ft")
+    # lateral accel scales with v^2: an S-curve that is gentle at 5 mph is violent at 30
+    if cruise ** 2 * s_curve_peak_k(offset, runout) > MAX_TURN_LAT_ACCEL:
+      min_runout = math.sqrt(2.0 * np.pi * abs(offset) * cruise ** 2 / MAX_TURN_LAT_ACCEL)
+      return None, (f"S-curve too sharp for {cruise * CV.MS_TO_MPH:.0f} mph: need runout >= "
+                    f"{min_runout * M_TO_FT:.0f} ft (or slow down)")
     target = straight + runout
     if not 0.0 < target <= MAX_DISTANCE_M:
       return None, "bad distance"
@@ -370,9 +378,11 @@ class DemoController:
     if cs.gasPressed or cs.brakePressed or cs.steeringPressed:
       return "driver override"
     lead = sm['radarState'].leadOne
-    # headway-scaled: 6 m floor for lot speeds, ~1 s of headway at street speeds. demod has no
-    # car-following — desire demos assume a clear road; this is the backstop, not ACC.
-    if lead.status and lead.dRel < max(LEAD_ABORT_DIST_M, cs.vEgo * LEAD_ABORT_HEADWAY_S):
+    # abort threshold: 6 m floor, 1 s headway, or the controlled-stop braking distance at
+    # DECEL_MAX — whichever is largest (at 30 mph braking distance ~60 m dominates). demod has
+    # no car-following — demos assume a clear road; this is the backstop, not ACC.
+    braking_dist = cs.vEgo ** 2 / (2.0 * DECEL_MAX)
+    if lead.status and lead.dRel < max(LEAD_ABORT_DIST_M, cs.vEgo * LEAD_ABORT_HEADWAY_S, braking_dist):
       return "lead detected"
     # deliberately NO client-heartbeat check here: maneuvers are distance/time-bounded and end
     # stopped on their own, so they run to completion even if WiFi drops. The heartbeat only

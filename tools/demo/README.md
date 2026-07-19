@@ -82,9 +82,12 @@ car before the first run).
 
 ## Guardrails (enforced in `demod`)
 
-- Hard caps: max speed 15 mph, max distance 300 ft per command, max scripted curvature 0.15 1/m —
-  commands whose offset/runout geometry needs sharper steering are rejected with the minimum
-  feasible `runout_ft` in the fault message.
+- Hard caps: max speed 30 mph, max distance 2000 ft per command. S-curve geometry is validated
+  against both the measured steering-authority ceiling (~0.045 1/m) and lateral accel at the
+  commanded cruise (~2 m/s² — sharper needs a longer `runout_ft` or a lower speed); rejections
+  include the minimum feasible `runout_ft`.
+- The lead-vehicle abort distance scales with the controlled-stop braking distance (~60 m at
+  30 mph), not just headway — still a clear-road backstop, not ACC.
 - Input validation rejects NaN/inf at both the web layer (HTTP 400) and demod.
 - Abort on a radar lead within 6 m, driver gas/brake/steer override, or disengage.
 - CRUISE (the only unbounded state) additionally requires a live client heartbeat: >6 s stale
