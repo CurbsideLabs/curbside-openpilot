@@ -92,10 +92,17 @@ CURB_CURVATURE_SIGN = 1.0
 
 # Scripted arc turn (deterministic 90-degree-style turn from a stop, dead-reckoned).
 DEFAULT_TURN_RADIUS_FT = 25.0           # ~7.6 m centerline radius; must be >= 1/MAX_SCRIPT_CURVATURE
-DEFAULT_TURN_TAIL_FT = 10.0             # straight run-out after the arc before stopping
+DEFAULT_TURN_TAIL_FT = 15.0             # straight run-out after the arc before stopping
+                                        # (>= braking distance from the 6 mph arc speed)
+# Torque steering tracks lateral ACCELERATION (= curvature * v^2), so at crawl speed there is no
+# error signal and the EPS unwinds mid-arc (lot log 2026-07-18: kdes 0.131 -> kmeas 0.012 at
+# 1.4 m/s, while the same log tracks kdes 0.09 fine at 4-6 m/s). Floor the arc speed.
+MIN_ARC_CRUISE_MPH = 5.0
+DEFAULT_ARC_CRUISE_MPH = 6.0
 TURN_RAMP_M = 2.0                       # curvature ramp-in/out distance at each end of the arc
 MAX_TURN_LAT_ACCEL = 2.0                # m/s^2 at the plateau: caps cruise speed vs radius
-ARC_MAX_FACTOR = 2.0                    # bail out of the arc after 2x its nominal length
+ARC_MAX_FACTOR = 2.5                    # bail out of the arc after 2.5x its nominal length
+                                        # (EPS undershoot widens the real arc; heading closes the loop)
 # Verified on the car: positive script curvature = RIGHT on this chain (see sign note above).
 TURN_LEFT_SIGN = -1.0
 
@@ -241,6 +248,13 @@ def build_maneuver(cmd: dict) -> tuple[Maneuver | None, str]:
     direction = cmd.get("direction")
     if direction not in ("left", "right"):
       return None, "direction must be left or right"
+    # arc-specific cruise default + floor (see MIN_ARC_CRUISE_MPH note)
+    cruise = num("cruise_mph", DEFAULT_ARC_CRUISE_MPH)
+    if cruise is None or not 0.0 < cruise * CV.MPH_TO_MS <= MAX_SPEED_MS:
+      return None, "bad cruise speed"
+    if cruise < MIN_ARC_CRUISE_MPH:
+      return None, f"cruise too slow: torque steering can't track the arc below {MIN_ARC_CRUISE_MPH:.0f} mph"
+    cruise *= CV.MPH_TO_MS
     radius = num("radius_ft", DEFAULT_TURN_RADIUS_FT)
     angle = num("angle_deg", 90.0)
     lead = num("lead_ft", 0.0)
