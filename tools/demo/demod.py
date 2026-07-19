@@ -91,7 +91,11 @@ MAX_TURN_HOLD_S = 15.0
 CURB_CURVATURE_SIGN = 1.0
 
 # Scripted arc turn (deterministic 90-degree-style turn from a stop, dead-reckoned).
-DEFAULT_TURN_RADIUS_FT = 25.0           # ~7.6 m centerline radius; must be >= 1/MAX_SCRIPT_CURVATURE
+# Measured on the car (route 00000017--fb499985fc, segs 19/20): with actuator torque saturated
+# at 1.00 for the whole arc, the wheel holds ~140 deg => ~0.047 1/m at ~6 mph. That is the stock
+# STEER_MAX authority ceiling — tighter radii stall mid-turn no matter what we command.
+ARC_AUTHORITY_CURVATURE = 0.045         # 1/m, just inside the measured saturated-torque ceiling
+DEFAULT_TURN_RADIUS_FT = 75.0           # ~22.9 m => 0.044 1/m, within ARC_AUTHORITY_CURVATURE
 DEFAULT_TURN_TAIL_FT = 15.0             # straight run-out after the arc before stopping
                                         # (>= braking distance from the 6 mph arc speed)
 # Torque steering tracks lateral ACCELERATION (= curvature * v^2), so at crawl speed there is no
@@ -264,19 +268,21 @@ def build_maneuver(cmd: dict) -> tuple[Maneuver | None, str]:
       return None, "bad geometry (angle_deg must be 20-120)"
     radius, lead, tail = radius * FT_TO_M, lead * FT_TO_M, tail * FT_TO_M
     k = 1.0 / radius
-    if k > MAX_SCRIPT_CURVATURE:
-      return None, f"radius too tight: need >= {(1.0 / MAX_SCRIPT_CURVATURE) * M_TO_FT:.0f} ft"
+    if k > ARC_AUTHORITY_CURVATURE:
+      return None, (f"radius too tight for stock steering torque: need >= "
+                    f"{(1.0 / ARC_AUTHORITY_CURVATURE) * M_TO_FT:.0f} ft (or raise STEER_MAX)")
     if cruise ** 2 * k > MAX_TURN_LAT_ACCEL:
       return None, f"cruise too fast for radius: max {math.sqrt(MAX_TURN_LAT_ACCEL / k) * CV.MS_TO_MPH:.0f} mph"
     theta = math.radians(angle)
     ramp = min(TURN_RAMP_M, 0.4 * theta * radius)
     arc_len = theta * radius + ramp  # nominal length; the arc actually ends on measured heading
+    if not 0.0 < lead + arc_len + tail <= MAX_DISTANCE_M:
+      return None, "bad distance"
     # initial stop target sits at the arc's bail-out cap so the longitudinal plan never
     # decelerates to a stop while the (EPS-lagged) arc is still turning; _arcturn_lat pulls
-    # the target in to (arc end + tail) the moment the heading completes
+    # the target in to (arc end + tail) the moment the heading completes. May exceed
+    # MAX_DISTANCE_M by design — it is still hard-bounded by the factor.
     target = lead + ARC_MAX_FACTOR * arc_len + tail
-    if not 0.0 < target <= MAX_DISTANCE_M:
-      return None, "bad distance"
     sign = TURN_LEFT_SIGN if direction == "left" else -TURN_LEFT_SIGN
     return Maneuver("arcturn", target, lead, arc_len, 0.0, cruise, direction=direction,
                     turn_k=sign * k, ramp_m=ramp, theta_rad=theta, tail_m=tail), ""
