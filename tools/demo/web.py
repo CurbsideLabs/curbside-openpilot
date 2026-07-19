@@ -12,10 +12,11 @@ token is generated on first start and logged; fetch it once over SSH with
 ``python3 -c "from openpilot.common.params import Params; print(Params().get('DemoAuthToken'))"``
 and enter it in the control page (it persists in the browser).
 
-Watchdog contract: issuing a motion command returns a ``cmd_id``. The commanding client must POST
-``/heartbeat {"cmd_id": ...}`` at least every ~1 s until the maneuver ends, or demod aborts with
-"client lost". Only the heartbeat of the client driving the *active* command counts — status polls
-(or a second phone watching) do not feed the watchdog.
+Heartbeat contract: issuing a motion command returns a ``cmd_id``; the commanding client POSTs
+``/heartbeat {"cmd_id": ...}`` periodically. Maneuvers execute to completion regardless of the
+connection (they are bounded and end stopped) — the heartbeat only tethers the unbounded CRUISE
+hold, which demod gracefully stops ~6 s after the last beat. Only the heartbeat of the client
+driving the *active* command counts — status polls do not feed it.
 
 Commands are handed to demod via the ``DemoCommand`` param with a monotonically increasing ``seq``
 (demod consumes by sequence number, so no read/remove race); live state is read back from
@@ -56,8 +57,10 @@ TOKEN = None  # set in main() after Params is writable
 
 
 def _beat() -> None:
-  # CLOCK_MONOTONIC is system-wide; demod compares it against WATCHDOG_TIMEOUT_S
-  params.put("DemoHeartbeat", str(time.monotonic()))
+  # CLOCK_MONOTONIC is system-wide; demod compares it against WATCHDOG_TIMEOUT_S.
+  # Non-blocking: a blocking put fsyncs, and onroad (loggerd writing three video streams)
+  # that can stall the whole aiohttp event loop long enough to starve the watchdog.
+  params.put_nonblocking("DemoHeartbeat", str(time.monotonic()))
 
 
 _seq = int(time.monotonic() * 1000)  # unique across web.py restarts within a boot
@@ -67,7 +70,7 @@ def _send_command(cmd: dict) -> int:
   global _seq
   _seq += 1
   cmd["seq"] = _seq
-  params.put("DemoCommand", json.dumps(cmd))
+  params.put("DemoCommand", cmd)  # JSON param: put takes the dict itself
   return _seq
 
 
@@ -113,14 +116,8 @@ async def index(request: 'web.Request'):
 async def status(request: 'web.Request'):
   # read-only; deliberately does NOT feed the watchdog (only /heartbeat from the commanding
   # client does, so an observer's status poll can't mask a dead operator)
-  raw = params.get("DemoStatus")
-  data = {}
-  if raw:
-    try:
-      data = json.loads(raw)
-    except (ValueError, TypeError):
-      data = {}
-  return web.json_response(data)
+  data = params.get("DemoStatus")  # JSON param: parsed dict (or None)
+  return web.json_response(data if isinstance(data, dict) else {})
 
 
 async def forward(request: 'web.Request'):
@@ -167,6 +164,7 @@ async def heartbeat(request: 'web.Request'):
   if _active_cmd_id is not None and cmd_id == _active_cmd_id:
     _beat()
     return web.json_response({"status": "ok"})
+  cloudlog.warning(f"demoweb: stale heartbeat rejected: got cmd_id={cmd_id!r}, active={_active_cmd_id!r}")
   return web.json_response({"status": "stale", "active_cmd_id": _active_cmd_id})
 
 

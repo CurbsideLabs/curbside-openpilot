@@ -4,7 +4,7 @@ Curbside demo host client — runs on the laptop/phone side, talks to demoweb on
 
 Implements the full command + watchdog contract from tools/demo/README.md:
 every motion command returns a cmd_id, and the commanding client must POST
-/heartbeat {"cmd_id": N} at least every ~1 s until the maneuver ends, or demod
+/heartbeat {"cmd_id": N} at least every ~1 s (this client beats at 2 Hz) until the maneuver ends, or demod
 aborts with "client lost". This module owns that heartbeat loop in a background
 thread so the AI agent (or a human at the CLI) only has to issue commands.
 
@@ -25,7 +25,7 @@ CLI use (manual testing / filming):
 
 Motion subcommands stay in the foreground, heartbeating and printing status until
 the maneuver reaches a terminal state. Ctrl-C sends a graceful stop. If this
-process dies for any reason, demod's watchdog stops the car within ~3 s.
+process dies for any reason, demod's watchdog stops the car within ~6 s.
 """
 import argparse
 import json
@@ -37,7 +37,7 @@ import urllib.error
 
 TERMINAL_STATES = ("IDLE", "DONE", "ABORT")
 CRUISE_STATES = ("CRUISE",)
-HEARTBEAT_PERIOD_S = 1.0
+HEARTBEAT_PERIOD_S = 0.5  # 2 Hz against demod's 6 s watchdog: several beats can drop before an abort
 
 
 class DemoClientError(Exception):
@@ -72,16 +72,28 @@ class DemoClient:
 
   # --- heartbeat -----------------------------------------------------------
   def _heartbeat_loop(self):
+    failures = 0
     while not self._hb_stop.wait(HEARTBEAT_PERIOD_S):
       with self._lock:
         cmd_id = self._cmd_id
       if cmd_id is None:
         continue
       try:
-        self._request("POST", "/heartbeat", {"cmd_id": cmd_id})
-      except DemoClientError:
-        # transient WiFi drop: keep trying; demod aborts on its own if we stay silent >3 s
-        pass
+        resp = self._request("POST", "/heartbeat", {"cmd_id": cmd_id})
+        if resp.get("status") != "ok":
+          failures += 1
+          if failures in (1, 10):
+            print(f"\n[heartbeat] rejected by demoweb as {resp} — CRUISE would auto-stop; "
+                  "scripted maneuvers unaffected", file=sys.stderr)
+        else:
+          failures = 0
+      except DemoClientError as e:
+        # transient WiFi drop: keep trying; maneuvers finish on their own, and demod
+        # gracefully stops a CRUISE ~6 s after the last beat that landed
+        failures += 1
+        if failures in (3, 10):
+          print(f"\n[heartbeat] {failures} consecutive failures ({e}) — check WiFi; "
+                "scripted maneuvers unaffected", file=sys.stderr)
 
   def _start_heartbeat(self, cmd_id: int):
     with self._lock:

@@ -30,7 +30,9 @@ written mid-cycle cannot be lost to a read/remove race. Live state is published 
 
 Odometry is dead reckoning by integrating ``carState.vEgo``. All motion is bounded by hard caps
 (max speed, max distance, max scripted curvature) and aborts on a close radar lead, driver
-override, disengage, or a stale client heartbeat.
+override, or disengage. Maneuvers execute to completion independent of the client connection
+(they are distance/time-bounded and end stopped); the client heartbeat only tethers the
+unbounded CRUISE hold, which gracefully stops if the client disappears.
 """
 import json
 import math
@@ -90,7 +92,8 @@ CURB_CURVATURE_SIGN = 1.0
 # Guardrails.
 LEAD_ABORT_DIST_M = 6.0                 # abort floor: radar lead closer than this
 LEAD_ABORT_HEADWAY_S = 1.0              # scales the abort distance with speed for street maneuvers
-WATCHDOG_TIMEOUT_S = 3.0                # abort if the client heartbeat goes stale mid-maneuver
+WATCHDOG_TIMEOUT_S = 6.0                # abort if the client heartbeat goes stale mid-maneuver
+                                        # (client beats at 2 Hz; window absorbs WiFi/eMMC hiccups)
 
 
 class State(Enum):
@@ -230,21 +233,20 @@ class DemoController:
 
   # --- command intake -------------------------------------------------------
   def _peek_seq(self) -> int:
-    raw = self.params.get("DemoCommand")
-    if raw:
+    cmd = self.params.get("DemoCommand")  # JSON param: Params.get returns a parsed dict (or None)
+    if isinstance(cmd, dict):
       try:
-        return int(json.loads(raw).get("seq", 0))
+        return int(cmd.get("seq", 0))
       except (ValueError, TypeError):
         pass
     return 0
 
   def _read_command(self) -> dict | None:
     # seq-gated, never removed: a concurrent write from web.py cannot be deleted unread
-    raw = self.params.get("DemoCommand")
-    if not raw:
+    cmd = self.params.get("DemoCommand")  # JSON param: parsed dict (or None)
+    if not isinstance(cmd, dict):
       return None
     try:
-      cmd = json.loads(raw)
       seq = int(cmd.get("seq", 0))
     except (ValueError, TypeError):
       cloudlog.exception("demod: bad DemoCommand")
@@ -290,8 +292,9 @@ class DemoController:
     # car-following — desire demos assume a clear road; this is the backstop, not ACC.
     if lead.status and lead.dRel < max(LEAD_ABORT_DIST_M, cs.vEgo * LEAD_ABORT_HEADWAY_S):
       return "lead detected"
-    if not self._client_alive():
-      return "client lost"
+    # deliberately NO client-heartbeat check here: maneuvers are distance/time-bounded and end
+    # stopped on their own, so they run to completion even if WiFi drops. The heartbeat only
+    # tethers the unbounded CRUISE hold (see the CRUISE state in update()).
     return ""
 
   # --- longitudinal profiles ------------------------------------------------
@@ -372,6 +375,12 @@ class DemoController:
         self.fault = fault
         self.state = State.ABORT
         cloudlog.warning(f"demod: ABORT ({fault})")
+      elif not self._client_alive():
+        # CRUISE is the only unbounded state (speed held until the next command), so it keeps
+        # a connection tether: no heartbeat -> controlled stop, not an abort fault
+        self.fault = "client lost"
+        self.state = State.STOPPING
+        cloudlog.warning("demod: client lost in CRUISE -> controlled stop")
       else:
         accel = self._accel_speed_hold(v_ego, self.maneuver.cruise_ms)
         should_stop = False
@@ -515,7 +524,9 @@ def main():
       status_json = json.dumps(st)
       if status_json != last_status:
         last_status = status_json
-        params.put("DemoStatus", status_json)
+        # JSON param: put takes the dict itself. Non-blocking: a blocking put fsyncs, which
+        # under onroad IO load can stall this 20 Hz loop and starve longitudinalPlan.
+        params.put_nonblocking("DemoStatus", st)
 
 
 if __name__ == "__main__":

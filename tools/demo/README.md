@@ -50,9 +50,9 @@ use demod's defaults (`DEFAULT_*` in `demod.py` — the single source of truth).
 | `POST /demo/lanechange` | `{direction, cruise_mph}` | **Model-executed** lane change (Plan 2): demod holds cruise speed and injects the desire as a virtual blinker; the driving model plans and steers the change with all gates (≥21 mph, blind spot, ALC mode) intact. Ends in CRUISE. |
 | `POST /demo/turn` | `{direction, hold_s, cruise_mph}` | **Model-executed** turn via sunnypilot LaneTurnDesire: desire held for `hold_s` (default 8 s) at low speed; the model executes. Ends in CRUISE. |
 | `POST /demo/stop` | — | Graceful controlled stop (no fault) — ends a CRUISE. |
-| `POST /heartbeat` | `{cmd_id}` | Watchdog keep-alive for the **active** command (see below). |
+| `POST /heartbeat` | `{cmd_id}` | Keep-alive for the **active** command; only tethers the CRUISE hold (see below). |
 | `POST /abort` | — | Immediate controlled stop, recorded as an abort. |
-| `GET /status` | — | State machine + odometry + faults. Read-only; does **not** feed the watchdog. |
+| `GET /status` | — | State machine + odometry + faults. Read-only; does **not** feed the heartbeat. |
 
 **Model-executed maneuver prerequisites** (rejected with guidance otherwise): lane changes need
 nudgeless auto-lane-change (`Params().put("AutoLaneChangeTimer", "1")`); turns need
@@ -62,11 +62,14 @@ chained; send `/demo/stop` (or the next command) to continue. **Clear-road assum
 no car-following; the headway-scaled lead abort (~1 s) is a backstop, not ACC — run these on an
 empty road.
 
-Motion commands return `{"status": "ok", "cmd_id": N}`. **Watchdog contract:** the commanding
-client must POST `/heartbeat {"cmd_id": N}` at least every ~1 s until the maneuver reaches
-DONE/IDLE, or demod aborts with `client lost` ~3 s after the last beat. Only the active command's
-heartbeat counts — observers polling `/status` cannot mask a dead operator. The offboard AI planner
-(Phase 5) must implement the same heartbeat loop.
+Motion commands return `{"status": "ok", "cmd_id": N}`. **Heartbeat contract:** maneuvers
+execute to completion regardless of the connection — they are distance/time-bounded and end
+stopped, so a WiFi drop mid-maneuver does not abort them. The commanding client POSTs
+`/heartbeat {"cmd_id": N}` periodically (the bundled client beats at 2 Hz) because the one
+unbounded state, **CRUISE** (speed held after a lane change / turn), gracefully stops ~6 s after
+the last beat — a dead operator can't leave the car cruising. Only the active command's
+heartbeat counts — observers polling `/status` cannot mask a dead operator. The offboard AI
+planner (Phase 5) should implement the same heartbeat loop.
 
 `offset_ft` is signed: positive pulls toward the right-hand curb, negative toward the left
 (`CURB_CURVATURE_SIGN` in `demod.py` calibrates which physical side "positive" is — verify on the
@@ -78,8 +81,9 @@ car before the first run).
   commands whose offset/runout geometry needs sharper steering are rejected with the minimum
   feasible `runout_ft` in the fault message.
 - Input validation rejects NaN/inf at both the web layer (HTTP 400) and demod.
-- Abort on a radar lead within 6 m, driver gas/brake/steer override, disengage, or a stale client
-  heartbeat (>3 s) mid-maneuver.
+- Abort on a radar lead within 6 m, driver gas/brake/steer override, or disengage.
+- CRUISE (the only unbounded state) additionally requires a live client heartbeat: >6 s stale
+  triggers a graceful controlled stop. Bounded maneuvers run to completion without the client.
 - Commands are consumed by sequence number (never deleted), so an ABORT can't be lost to a race.
 - `shouldStop=False` while moving lets controlsd emit `cruiseControl.resume` automatically, so a
   remote "go" from a standstill works with stock controls once engaged.
