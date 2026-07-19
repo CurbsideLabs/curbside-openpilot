@@ -89,6 +89,15 @@ MAX_TURN_HOLD_S = 15.0
 # if the car steers the wrong way with positive offsets.
 CURB_CURVATURE_SIGN = 1.0
 
+# Scripted arc turn (deterministic 90-degree-style turn from a stop, dead-reckoned).
+DEFAULT_TURN_RADIUS_FT = 25.0           # ~7.6 m centerline radius; must be >= 1/MAX_SCRIPT_CURVATURE
+DEFAULT_TURN_TAIL_FT = 10.0             # straight run-out after the arc before stopping
+TURN_RAMP_M = 2.0                       # curvature ramp-in/out distance at each end of the arc
+MAX_TURN_LAT_ACCEL = 2.0                # m/s^2 at the plateau: caps cruise speed vs radius
+# ISO sign convention: positive curvature turns left. Flip only this constant if the car
+# turns the wrong way (same on-car verification as CURB_CURVATURE_SIGN).
+TURN_LEFT_SIGN = 1.0
+
 # Guardrails.
 LEAD_ABORT_DIST_M = 6.0                 # abort floor: radar lead closer than this
 LEAD_ABORT_HEADWAY_S = 1.0              # scales the abort distance with speed for street maneuvers
@@ -116,14 +125,16 @@ DESIRE_BY_KIND = {
 
 @dataclass
 class Maneuver:
-  kind: str          # "forward" | "pullover" | "pullout" | "lanechange" | "turn"
+  kind: str          # "forward" | "pullover" | "pullout" | "arcturn" | "lanechange" | "turn"
   target_m: float    # total forward distance (scripted kinds; 0 for desire kinds)
-  lat_start_m: float  # odometer position where the S-curve begins
-  lat_len_m: float   # longitudinal length of the S-curve (0 => no scripted lateral)
-  offset_m: float    # lateral offset achieved over the S-curve (signed)
+  lat_start_m: float  # odometer position where the S-curve / arc begins
+  lat_len_m: float   # longitudinal length of the S-curve / arc (0 => no scripted lateral)
+  offset_m: float    # lateral offset achieved over the S-curve (signed; 0 for arcturn)
   cruise_ms: float   # target cruise speed for this command
-  direction: str = ""  # desire kinds: "left" | "right"
+  direction: str = ""  # desire kinds + arcturn: "left" | "right"
   hold_s: float = 0.0  # turn: how long to hold the desire
+  turn_k: float = 0.0  # arcturn: signed plateau curvature (1/radius; ISO: positive = left)
+  ramp_m: float = 0.0  # arcturn: curvature ramp-in/out distance at each end of the arc
 
   @property
   def is_desire(self) -> bool:
@@ -134,21 +145,29 @@ class Maneuver:
     return DESIRE_BY_KIND.get((self.kind, self.direction), "")
 
   def in_lat_window(self, odo: float) -> bool:
-    """Scripted lateral applies only inside the S-curve; everywhere else the model steers."""
-    if self.lat_len_m <= 0.0 or self.offset_m == 0.0:
+    """Scripted lateral applies only inside the S-curve / arc; everywhere else the model steers."""
+    if self.lat_len_m <= 0.0 or (self.offset_m == 0.0 and self.turn_k == 0.0):
       return False
     return self.lat_start_m <= odo <= self.lat_start_m + self.lat_len_m
 
   def curvature(self, odo: float) -> float:
     """Scripted desired curvature at the current odometer reading.
 
-    Uses a single sinusoidal curvature over the run-out: kappa(s) = A * sin(2*pi*s/L).
-    This produces net-zero heading change and a pure lateral offset of A*L^2/(2*pi),
-    i.e. two smooth opposing arcs (an S).
+    S-curve (pullover/pullout): single sinusoid kappa(s) = A * sin(2*pi*s/L) — net-zero heading
+    change, pure lateral offset of A*L^2/(2*pi) (two smooth opposing arcs).
+    Arc turn: trapezoidal curvature — linear ramp to 1/R over ramp_m, constant plateau, ramp
+    back out. Total heading change = turn_k * (L - ramp_m).
     """
     if not self.in_lat_window(odo):
       return 0.0
     s = odo - self.lat_start_m
+    if self.turn_k != 0.0:
+      L, r = self.lat_len_m, self.ramp_m
+      if s < r:
+        return float(self.turn_k * s / r)
+      if s > L - r:
+        return float(self.turn_k * (L - s) / r)
+      return float(self.turn_k)
     amp = 2.0 * np.pi * self.offset_m / (self.lat_len_m ** 2)
     return float(amp * np.sin(2.0 * np.pi * s / self.lat_len_m))
 
@@ -214,6 +233,33 @@ def build_maneuver(cmd: dict) -> tuple[Maneuver | None, str]:
     side = CURB_CURVATURE_SIGN if kind == "pullover" else -CURB_CURVATURE_SIGN
     lat_start = straight if kind == "pullover" else 0.0
     return Maneuver(kind, target, lat_start, runout, offset * side, cruise), ""
+
+  if kind == "arcturn":
+    direction = cmd.get("direction")
+    if direction not in ("left", "right"):
+      return None, "direction must be left or right"
+    radius = num("radius_ft", DEFAULT_TURN_RADIUS_FT)
+    angle = num("angle_deg", 90.0)
+    lead = num("lead_ft", 0.0)
+    tail = num("tail_ft", DEFAULT_TURN_TAIL_FT)
+    if radius is None or angle is None or lead is None or tail is None or \
+       radius <= 0.0 or lead < 0.0 or tail < 0.0 or not 20.0 <= angle <= 120.0:
+      return None, "bad geometry (angle_deg must be 20-120)"
+    radius, lead, tail = radius * FT_TO_M, lead * FT_TO_M, tail * FT_TO_M
+    k = 1.0 / radius
+    if k > MAX_SCRIPT_CURVATURE:
+      return None, f"radius too tight: need >= {(1.0 / MAX_SCRIPT_CURVATURE) * M_TO_FT:.0f} ft"
+    if cruise ** 2 * k > MAX_TURN_LAT_ACCEL:
+      return None, f"cruise too fast for radius: max {math.sqrt(MAX_TURN_LAT_ACCEL / k) * CV.MS_TO_MPH:.0f} mph"
+    theta = math.radians(angle)
+    ramp = min(TURN_RAMP_M, 0.4 * theta * radius)
+    arc_len = theta * radius + ramp  # trapezoid area k*(L - ramp) integrates to exactly theta
+    target = lead + arc_len + tail
+    if not 0.0 < target <= MAX_DISTANCE_M:
+      return None, "bad distance"
+    sign = TURN_LEFT_SIGN if direction == "left" else -TURN_LEFT_SIGN
+    return Maneuver("arcturn", target, lead, arc_len, 0.0, cruise,
+                    direction=direction, turn_k=sign * k, ramp_m=ramp), ""
 
   return None, "unknown command"
 

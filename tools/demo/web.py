@@ -140,6 +140,12 @@ def _direction(body: dict) -> str:
   return d
 
 
+async def arcturn(request: 'web.Request'):
+  body = await _json(request)
+  return _motion_command("arcturn", body, ["radius_ft", "angle_deg", "lead_ft", "tail_ft", "cruise_mph"],
+                         extra={"direction": _direction(body)})
+
+
 async def lanechange(request: 'web.Request'):
   body = await _json(request)
   return _motion_command("lanechange", body, ["cruise_mph"], extra={"direction": _direction(body)})
@@ -197,6 +203,7 @@ def main():
   app.router.add_post("/demo/forward", forward)
   app.router.add_post("/demo/pullover", pullover)
   app.router.add_post("/demo/pullout", pullout)
+  app.router.add_post("/demo/arcturn", arcturn)
   app.router.add_post("/demo/lanechange", lanechange)
   app.router.add_post("/demo/turn", turn)
   app.router.add_post("/demo/stop", stop)

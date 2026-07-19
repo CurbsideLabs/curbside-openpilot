@@ -130,6 +130,16 @@ class DemoClient:
     return self._motion("/demo/pullout", {"forward_ft": forward_ft, "offset_ft": offset_ft,
                                           "runout_ft": runout_ft, "cruise_mph": cruise_mph})
 
+  def arcturn(self, direction: str, radius_ft: float | None = None, angle_deg: float | None = None,
+              lead_ft: float | None = None, tail_ft: float | None = None,
+              cruise_mph: float | None = None) -> int:
+    """Scripted (dead-reckoned) turn from a stop: optional straight lead-in, constant-radius
+    arc through angle_deg, straight tail-out, ends stopped. Deterministic — no model perception
+    involved in the arc itself."""
+    return self._motion("/demo/arcturn", {"direction": direction, "radius_ft": radius_ft,
+                                          "angle_deg": angle_deg, "lead_ft": lead_ft,
+                                          "tail_ft": tail_ft, "cruise_mph": cruise_mph})
+
   def lanechange(self, direction: str, cruise_mph: float | None = None) -> int:
     return self._motion("/demo/lanechange", {"direction": direction, "cruise_mph": cruise_mph})
 
@@ -234,6 +244,14 @@ def main():
   pu.add_argument("--runout-ft", type=float)
   pu.add_argument("--cruise-mph", type=float)
 
+  at = sub.add_parser("arcturn")
+  at.add_argument("direction", choices=["left", "right"])
+  at.add_argument("--radius-ft", type=float)
+  at.add_argument("--angle-deg", type=float)
+  at.add_argument("--lead-ft", type=float)
+  at.add_argument("--tail-ft", type=float)
+  at.add_argument("--cruise-mph", type=float)
+
   lc = sub.add_parser("lanechange")
   lc.add_argument("direction", choices=["left", "right"])
   lc.add_argument("--cruise-mph", type=float)
@@ -265,6 +283,9 @@ def main():
       return _run_motion(client, lambda: client.pullover(args.travel_ft, args.offset_ft, args.runout_ft, args.cruise_mph))
     elif args.cmd == "pullout":
       return _run_motion(client, lambda: client.pullout(args.forward_ft, args.offset_ft, args.runout_ft, args.cruise_mph))
+    elif args.cmd == "arcturn":
+      return _run_motion(client, lambda: client.arcturn(args.direction, args.radius_ft, args.angle_deg,
+                                                        args.lead_ft, args.tail_ft, args.cruise_mph))
     elif args.cmd == "lanechange":
       return _run_motion(client, lambda: client.lanechange(args.direction, args.cruise_mph))
     elif args.cmd == "turn":

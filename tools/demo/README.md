@@ -47,6 +47,7 @@ use demod's defaults (`DEFAULT_*` in `demod.py` — the single source of truth).
 | `POST /demo/forward` | `{distance_ft, cruise_mph}` | Drive forward N feet (model steering), stop. |
 | `POST /demo/pullover` | `{travel_ft, offset_ft, runout_ft, cruise_mph}` | Forward on model steering, then S-curve to the curb, stop. |
 | `POST /demo/pullout` | `{forward_ft, offset_ft, runout_ft, cruise_mph}` | S-curve away from the curb, then forward on model steering, stop. |
+| `POST /demo/arcturn` | `{direction, radius_ft, angle_deg, lead_ft, tail_ft, cruise_mph}` | **Scripted** (dead-reckoned) turn from a stop: optional straight lead-in, constant-radius arc through `angle_deg` (default 90°, 20–120°), straight tail-out, ends stopped. Deterministic — no model perception in the arc. Defaults: 25 ft radius, 10 ft tail. Cruise capped by lateral accel (~2 m/s²) vs radius. |
 | `POST /demo/lanechange` | `{direction, cruise_mph}` | **Model-executed** lane change (Plan 2): demod holds cruise speed and injects the desire as a virtual blinker; the driving model plans and steers the change with all gates (≥21 mph, blind spot, ALC mode) intact. Ends in CRUISE. |
 | `POST /demo/turn` | `{direction, hold_s, cruise_mph}` | **Model-executed** turn via sunnypilot LaneTurnDesire: desire held for `hold_s` (default 8 s) at low speed; the model executes. Ends in CRUISE. |
 | `POST /demo/stop` | — | Graceful controlled stop (no fault) — ends a CRUISE. |
@@ -96,3 +97,8 @@ car before the first run).
   is sharper; the cap rejects anything the torque controller couldn't track.
 - Low-speed steering authority is the main unknown (plan Phase 3): tune `offset_ft`/`runout_ft`
   on the lot before street runs.
+- Arc turn: trapezoidal curvature (2 m ramps, constant 1/radius plateau) whose integral is
+  exactly `angle_deg`. Default 25 ft radius ⇒ 0.13 1/m plateau, close to the 0.15 cap — the
+  torque controller will lag a step this size at very low speed, so expect the real turn to run
+  slightly wide; tighten `radius_ft` or extend `tail_ft` empirically. `TURN_LEFT_SIGN` in
+  `demod.py` follows ISO (positive curvature = left); verify on the car like `CURB_CURVATURE_SIGN`.
