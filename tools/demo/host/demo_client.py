@@ -190,8 +190,9 @@ class DemoClient:
 # --- CLI --------------------------------------------------------------------
 
 def _print_status(st: dict):
+  turn = f"{st['turn_deg']:3.0f}° " if st.get("turn_deg") else ""
   line = (f"\r{st.get('state', '?'):9s} {st.get('kind', ''):10s} "
-          f"{st.get('odo_ft', 0):6.1f} ft  {st.get('v_mph', 0):5.1f} mph  "
+          f"{st.get('odo_ft', 0):6.1f} ft  {st.get('v_mph', 0):5.1f} mph  {turn}"
           f"{st.get('fault', '')}")
   sys.stdout.write(line.ljust(100))
   sys.stdout.flush()

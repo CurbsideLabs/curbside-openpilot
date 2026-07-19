@@ -84,9 +84,10 @@ DEFAULT_TURN_CRUISE_MPH = 8.0
 DEFAULT_TURN_HOLD_S = 8.0                  # how long the turn desire is held
 MAX_TURN_HOLD_S = 15.0
 
-# Calibration constant mapping positive script curvature to "toward the right-hand curb" on this
-# car. A negative offset_ft in a command flips the side (left-hand curb) — flip only this constant
-# if the car steers the wrong way with positive offsets.
+# Sign chain, verified on the car (lot test 2026-07-18, via arcturn): POSITIVE script curvature
+# turns the car RIGHT on this platform's controls chain. Hence:
+# - CURB_CURVATURE_SIGN = +1.0 is correct as-is (positive offset_ft -> right-hand curb).
+# - TURN_LEFT_SIGN = -1.0 (a left turn needs negative curvature).
 CURB_CURVATURE_SIGN = 1.0
 
 # Scripted arc turn (deterministic 90-degree-style turn from a stop, dead-reckoned).
@@ -94,9 +95,9 @@ DEFAULT_TURN_RADIUS_FT = 25.0           # ~7.6 m centerline radius; must be >= 1
 DEFAULT_TURN_TAIL_FT = 10.0             # straight run-out after the arc before stopping
 TURN_RAMP_M = 2.0                       # curvature ramp-in/out distance at each end of the arc
 MAX_TURN_LAT_ACCEL = 2.0                # m/s^2 at the plateau: caps cruise speed vs radius
-# ISO sign convention: positive curvature turns left. Flip only this constant if the car
-# turns the wrong way (same on-car verification as CURB_CURVATURE_SIGN).
-TURN_LEFT_SIGN = 1.0
+ARC_MAX_FACTOR = 2.0                    # bail out of the arc after 2x its nominal length
+# Verified on the car: positive script curvature = RIGHT on this chain (see sign note above).
+TURN_LEFT_SIGN = -1.0
 
 # Guardrails.
 LEAD_ABORT_DIST_M = 6.0                 # abort floor: radar lead closer than this
@@ -133,8 +134,10 @@ class Maneuver:
   cruise_ms: float   # target cruise speed for this command
   direction: str = ""  # desire kinds + arcturn: "left" | "right"
   hold_s: float = 0.0  # turn: how long to hold the desire
-  turn_k: float = 0.0  # arcturn: signed plateau curvature (1/radius; ISO: positive = left)
+  turn_k: float = 0.0  # arcturn: signed plateau curvature (1/radius; sign per TURN_LEFT_SIGN)
   ramp_m: float = 0.0  # arcturn: curvature ramp-in/out distance at each end of the arc
+  theta_rad: float = 0.0  # arcturn: commanded heading change magnitude
+  tail_m: float = 0.0  # arcturn: straight run-out after the arc actually completes
 
   @property
   def is_desire(self) -> bool:
@@ -253,13 +256,16 @@ def build_maneuver(cmd: dict) -> tuple[Maneuver | None, str]:
       return None, f"cruise too fast for radius: max {math.sqrt(MAX_TURN_LAT_ACCEL / k) * CV.MS_TO_MPH:.0f} mph"
     theta = math.radians(angle)
     ramp = min(TURN_RAMP_M, 0.4 * theta * radius)
-    arc_len = theta * radius + ramp  # trapezoid area k*(L - ramp) integrates to exactly theta
-    target = lead + arc_len + tail
+    arc_len = theta * radius + ramp  # nominal length; the arc actually ends on measured heading
+    # initial stop target sits at the arc's bail-out cap so the longitudinal plan never
+    # decelerates to a stop while the (EPS-lagged) arc is still turning; _arcturn_lat pulls
+    # the target in to (arc end + tail) the moment the heading completes
+    target = lead + ARC_MAX_FACTOR * arc_len + tail
     if not 0.0 < target <= MAX_DISTANCE_M:
       return None, "bad distance"
     sign = TURN_LEFT_SIGN if direction == "left" else -TURN_LEFT_SIGN
-    return Maneuver("arcturn", target, lead, arc_len, 0.0, cruise,
-                    direction=direction, turn_k=sign * k, ramp_m=ramp), ""
+    return Maneuver("arcturn", target, lead, arc_len, 0.0, cruise, direction=direction,
+                    turn_k=sign * k, ramp_m=ramp, theta_rad=theta, tail_m=tail), ""
 
   return None, "unknown command"
 
@@ -273,6 +279,8 @@ class DemoController:
     self.odo = 0.0
     self.elapsed = 0.0
     self.seen_lane_change = False
+    self.turn_heading = 0.0        # arcturn: integrated measured heading (rad)
+    self.arc_end_odo: float | None = None  # arcturn: odometer where the arc completed
     self.fault = ""
     # skip any command that predates this process (e.g. left over from before a restart)
     self.last_seq = self._peek_seq()
@@ -356,6 +364,39 @@ class DemoController:
   def _accel_speed_hold(self, v_ego: float, cruise_ms: float) -> float:
     return float(np.clip((cruise_ms - v_ego) / T_TRACK, -DECEL_MAX, ACCEL_MAX))
 
+  # --- arc turn lateral -------------------------------------------------------
+  def _arcturn_lat(self, sm, v_ego: float) -> tuple[bool, float]:
+    """Closed-loop arc: command the trapezoid plateau, but end on MEASURED heading.
+
+    The EPS lags and undershoots the commanded curvature at crawl speed, so a distance-based
+    window exits the arc early (observed on the car: ~half the commanded angle). Instead,
+    integrate the measured curvature (controlsState) over distance travelled and hold the arc
+    until the achieved heading reaches the commanded angle, ramping the command down over the
+    last ramp's worth of heading. The stop target is capped at ARC_MAX_FACTOR x the nominal
+    arc length, so an arc that can't complete still ends in a controlled stop (never circles).
+    """
+    m = self.maneuver
+    if self.odo < m.lat_start_m:        # straight lead-in: model steers
+      return False, 0.0
+    if self.arc_end_odo is not None:    # arc complete: straight tail on model steering
+      return False, 0.0
+    # measured heading progress (rad), same sign convention as the commanded curvature
+    self.turn_heading += sm['controlsState'].curvature * v_ego * DT_MDL
+    sign = 1.0 if m.turn_k >= 0.0 else -1.0
+    progress = sign * self.turn_heading
+    remaining = m.theta_rad - progress
+    if remaining <= math.radians(2.0):
+      self.arc_end_odo = self.odo
+      m.target_m = min(m.target_m, self.odo + m.tail_m)  # pull the stop target in: tail then stop
+      cloudlog.info(f"demod: arc complete at {self.odo:.1f} m, heading {math.degrees(progress):.0f} deg")
+      return False, 0.0
+    s = self.odo - m.lat_start_m
+    ramp_in = s / m.ramp_m if m.ramp_m > 0.0 else 1.0
+    theta_ramp = abs(m.turn_k) * m.ramp_m / 2.0  # heading a linear ramp-out consumes
+    ramp_out = remaining / theta_ramp if theta_ramp > 0.0 else 1.0
+    frac = float(np.clip(min(ramp_in, ramp_out), 0.0, 1.0))
+    return True, float(m.turn_k * frac)
+
   # --- main step ------------------------------------------------------------
   def update(self, sm) -> tuple[float, bool, bool, float, str]:
     """Advance the state machine. Returns (accel, should_stop, lat_active, curvature, desire)."""
@@ -374,6 +415,8 @@ class DemoController:
         self.odo = 0.0
         self.elapsed = 0.0
         self.seen_lane_change = False
+        self.turn_heading = 0.0
+        self.arc_end_odo = None
         self.state = State.EXECUTING
         cloudlog.info(f"demod: EXECUTING {self.maneuver.kind}")
 
@@ -405,12 +448,19 @@ class DemoController:
             self.state = State.CRUISE
             cloudlog.info("demod: turn hold done -> CRUISE")
       else:
+        # scripted lateral only inside the S-curve / arc; the model steers everywhere else
+        if self.maneuver.kind == "arcturn":
+          lat_active, curvature = self._arcturn_lat(sm, v_ego)
+        else:
+          lat_active = self.maneuver.in_lat_window(self.odo)
+          curvature = self.maneuver.curvature(self.odo)
         accel, should_stop = self._accel_to_stop_at(self.maneuver.target_m, v_ego, self.maneuver.cruise_ms)
-        # scripted lateral only inside the S-curve; the model steers everywhere else
-        lat_active = self.maneuver.in_lat_window(self.odo)
-        curvature = self.maneuver.curvature(self.odo)
         if self.odo >= self.maneuver.target_m and v_ego < self.CP.vEgoStopping:
           self.state = State.DONE
+          if self.maneuver.kind == "arcturn" and self.arc_end_odo is None:
+            cloudlog.warning("demod: DONE via arc bail-out — heading never completed "
+                             f"({math.degrees(abs(self.turn_heading)):.0f} deg achieved); "
+                             "check radius vs steering authority")
           cloudlog.info("demod: DONE")
 
     if self.state == State.CRUISE:
@@ -488,6 +538,7 @@ class DemoController:
       "kind": m.kind if m else "",
       "desire": m.desire if m and self.state == State.EXECUTING and m.is_desire else "",
       "odo_ft": round(self.odo * M_TO_FT, 1),
+      "turn_deg": round(math.degrees(abs(self.turn_heading))),
       "target_ft": round(m.target_m * M_TO_FT, 1) if m else 0.0,
       "offset_ft": round(m.offset_m * M_TO_FT, 1) if m else 0.0,
       "v_mph": round(v_ego * CV.MS_TO_MPH, 1),

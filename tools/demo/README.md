@@ -97,8 +97,12 @@ car before the first run).
   is sharper; the cap rejects anything the torque controller couldn't track.
 - Low-speed steering authority is the main unknown (plan Phase 3): tune `offset_ft`/`runout_ft`
   on the lot before street runs.
-- Arc turn: trapezoidal curvature (2 m ramps, constant 1/radius plateau) whose integral is
-  exactly `angle_deg`. Default 25 ft radius ⇒ 0.13 1/m plateau, close to the 0.15 cap — the
-  torque controller will lag a step this size at very low speed, so expect the real turn to run
-  slightly wide; tighten `radius_ft` or extend `tail_ft` empirically. `TURN_LEFT_SIGN` in
-  `demod.py` follows ISO (positive curvature = left); verify on the car like `CURB_CURVATURE_SIGN`.
+- Arc turn: commands a trapezoidal curvature (2 m ramp-in, constant 1/radius plateau) but ends
+  the arc on **measured heading**, not distance: demod integrates `controlsState.curvature` over
+  distance travelled and holds the arc until the achieved angle reaches `angle_deg` (ramping out
+  over the last ramp's worth of heading), then runs the straight `tail_ft` and stops. EPS lag at
+  crawl speed makes the *path* wider than the nominal radius, but the final heading is exact.
+  Bail-out: if the heading can't complete within 2× the nominal arc length, the maneuver stops
+  normally (never circles) and logs a warning. `GET /status` exposes live progress as `turn_deg`.
+- Signs are **verified on this car** (lot test 2026-07-18): positive script curvature = right ⇒
+  `CURB_CURVATURE_SIGN = +1.0`, `TURN_LEFT_SIGN = -1.0`. Don't re-flip without re-testing.
