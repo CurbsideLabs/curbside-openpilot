@@ -20,10 +20,14 @@ Touch-points in the rest of the tree:
 
 ## Lateral behavior
 
-Scripted curvature applies **only inside a maneuver's S-curve window**. Plain FORWARD runs and the
-straight travel segment of a pull-over leave steering on the driving model (lane keeping / road
-following, which works on unmarked roads). During an abort, lateral is released to the model and
-the car brakes to a controlled stop.
+Scripted curvature applies **only inside a maneuver's S-curve window**. By default, plain FORWARD
+runs and the straight segments of a pull-over/pull-out leave steering on the driving model (lane
+keeping / road following — good on real roads with structure). **On open lots with no lane lines
+or edges the model hunts and the car weaves** — pass `hold_straight: true`
+(`--hold-straight` in the CLI) to keep scripted lateral active through the straight segments
+instead (curvature 0, wheel held straight). Note hold-straight is open-loop: it does not correct
+heading drift, so square the car up before long runs. During an abort, lateral is released to
+the model and the car brakes to a controlled stop.
 
 ## Enabling
 

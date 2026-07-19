@@ -145,6 +145,9 @@ class Maneuver:
   cruise_ms: float   # target cruise speed for this command
   direction: str = ""  # desire kinds + arcturn: "left" | "right"
   hold_s: float = 0.0  # turn: how long to hold the desire
+  hold_straight: bool = False  # scripted kinds: scripted straight (curvature 0) outside the
+                               # S-curve window instead of handing lateral to the driving model
+                               # (the model hunts on open lots with no road structure)
   turn_k: float = 0.0  # arcturn: signed plateau curvature (1/radius; sign per TURN_LEFT_SIGN)
   ramp_m: float = 0.0  # arcturn: curvature ramp-in/out distance at each end of the arc
   theta_rad: float = 0.0  # arcturn: commanded heading change magnitude
@@ -221,14 +224,18 @@ def build_maneuver(cmd: dict) -> tuple[Maneuver | None, str]:
     return None, "bad cruise speed"
   cruise *= CV.MPH_TO_MS
 
+  # validate S-curves against the MEASURED steering-authority ceiling, not the theoretical
+  # clamp — geometry the EPS can't track just undershoots the offset and weaves
   def s_curve_ok(offset_m: float, runout_m: float) -> bool:
-    return abs(2.0 * np.pi * offset_m) / (runout_m ** 2) <= MAX_SCRIPT_CURVATURE
+    return abs(2.0 * np.pi * offset_m) / (runout_m ** 2) <= ARC_AUTHORITY_CURVATURE
+
+  hold_straight = bool(cmd.get("hold_straight", False))
 
   if kind == "forward":
     dist = num("distance_ft", None)
     if dist is None or not 0.0 < dist * FT_TO_M <= MAX_DISTANCE_M:
       return None, "bad distance"
-    return Maneuver("forward", dist * FT_TO_M, 0.0, 0.0, 0.0, cruise), ""
+    return Maneuver("forward", dist * FT_TO_M, 0.0, 0.0, 0.0, cruise, hold_straight=hold_straight), ""
 
   if kind in ("pullover", "pullout"):
     runout = num("runout_ft", DEFAULT_RUNOUT_FT)
@@ -239,14 +246,15 @@ def build_maneuver(cmd: dict) -> tuple[Maneuver | None, str]:
       return None, "bad geometry"
     runout, offset, straight = runout * FT_TO_M, offset * FT_TO_M, straight * FT_TO_M
     if not s_curve_ok(offset, runout):
-      return None, f"offset too sharp: need runout >= {math.sqrt(2.0 * np.pi * abs(offset) / MAX_SCRIPT_CURVATURE) * M_TO_FT:.0f} ft"
+      return None, (f"offset too sharp to track (steering authority): need runout >= "
+                    f"{math.sqrt(2.0 * np.pi * abs(offset) / ARC_AUTHORITY_CURVATURE) * M_TO_FT:.0f} ft")
     target = straight + runout
     if not 0.0 < target <= MAX_DISTANCE_M:
       return None, "bad distance"
     # positive offset_ft steers toward the curb side (CURB_CURVATURE_SIGN); pullout mirrors it
     side = CURB_CURVATURE_SIGN if kind == "pullover" else -CURB_CURVATURE_SIGN
     lat_start = straight if kind == "pullover" else 0.0
-    return Maneuver(kind, target, lat_start, runout, offset * side, cruise), ""
+    return Maneuver(kind, target, lat_start, runout, offset * side, cruise, hold_straight=hold_straight), ""
 
   if kind == "arcturn":
     direction = cmd.get("direction")
@@ -472,7 +480,7 @@ class DemoController:
         if self.maneuver.kind == "arcturn":
           lat_active, curvature = self._arcturn_lat(sm, v_ego)
         else:
-          lat_active = self.maneuver.in_lat_window(self.odo)
+          lat_active = self.maneuver.in_lat_window(self.odo) or self.maneuver.hold_straight
           curvature = self.maneuver.curvature(self.odo)
         accel, should_stop = self._accel_to_stop_at(self.maneuver.target_m, v_ego, self.maneuver.cruise_ms)
         if self.odo >= self.maneuver.target_m and v_ego < self.CP.vEgoStopping:

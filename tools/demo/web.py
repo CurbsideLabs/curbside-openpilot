@@ -120,16 +120,26 @@ async def status(request: 'web.Request'):
   return web.json_response(data if isinstance(data, dict) else {})
 
 
+def _hold_straight(body: dict) -> dict:
+  # scripted straight segments instead of model steering (bool, so not in the numeric keys)
+  return {"hold_straight": True} if body.get("hold_straight") else {}
+
+
 async def forward(request: 'web.Request'):
-  return _motion_command("forward", await _json(request), ["distance_ft", "cruise_mph"])
+  body = await _json(request)
+  return _motion_command("forward", body, ["distance_ft", "cruise_mph"], extra=_hold_straight(body))
 
 
 async def pullover(request: 'web.Request'):
-  return _motion_command("pullover", await _json(request), ["travel_ft", "offset_ft", "runout_ft", "cruise_mph"])
+  body = await _json(request)
+  return _motion_command("pullover", body, ["travel_ft", "offset_ft", "runout_ft", "cruise_mph"],
+                         extra=_hold_straight(body))
 
 
 async def pullout(request: 'web.Request'):
-  return _motion_command("pullout", await _json(request), ["forward_ft", "offset_ft", "runout_ft", "cruise_mph"])
+  body = await _json(request)
+  return _motion_command("pullout", body, ["forward_ft", "offset_ft", "runout_ft", "cruise_mph"],
+                         extra=_hold_straight(body))
 
 
 def _direction(body: dict) -> str:

@@ -117,18 +117,24 @@ class DemoClient:
     self._start_heartbeat(cmd_id)
     return cmd_id
 
-  def forward(self, distance_ft: float, cruise_mph: float | None = None) -> int:
-    return self._motion("/demo/forward", {"distance_ft": distance_ft, "cruise_mph": cruise_mph})
+  def forward(self, distance_ft: float, cruise_mph: float | None = None,
+              hold_straight: bool = False) -> int:
+    return self._motion("/demo/forward", {"distance_ft": distance_ft, "cruise_mph": cruise_mph,
+                                          "hold_straight": hold_straight or None})
 
   def pullover(self, travel_ft: float | None = None, offset_ft: float | None = None,
-               runout_ft: float | None = None, cruise_mph: float | None = None) -> int:
+               runout_ft: float | None = None, cruise_mph: float | None = None,
+               hold_straight: bool = False) -> int:
     return self._motion("/demo/pullover", {"travel_ft": travel_ft, "offset_ft": offset_ft,
-                                           "runout_ft": runout_ft, "cruise_mph": cruise_mph})
+                                           "runout_ft": runout_ft, "cruise_mph": cruise_mph,
+                                           "hold_straight": hold_straight or None})
 
   def pullout(self, forward_ft: float | None = None, offset_ft: float | None = None,
-              runout_ft: float | None = None, cruise_mph: float | None = None) -> int:
+              runout_ft: float | None = None, cruise_mph: float | None = None,
+              hold_straight: bool = False) -> int:
     return self._motion("/demo/pullout", {"forward_ft": forward_ft, "offset_ft": offset_ft,
-                                          "runout_ft": runout_ft, "cruise_mph": cruise_mph})
+                                          "runout_ft": runout_ft, "cruise_mph": cruise_mph,
+                                          "hold_straight": hold_straight or None})
 
   def arcturn(self, direction: str, radius_ft: float | None = None, angle_deg: float | None = None,
               lead_ft: float | None = None, tail_ft: float | None = None,
@@ -232,18 +238,22 @@ def main():
   f = sub.add_parser("forward")
   f.add_argument("--distance-ft", type=float, required=True)
   f.add_argument("--cruise-mph", type=float)
+  f.add_argument("--hold-straight", action="store_true",
+                 help="scripted straight steering instead of the model (no hunting on open lots)")
 
   po = sub.add_parser("pullover")
   po.add_argument("--travel-ft", type=float)
   po.add_argument("--offset-ft", type=float)
   po.add_argument("--runout-ft", type=float)
   po.add_argument("--cruise-mph", type=float)
+  po.add_argument("--hold-straight", action="store_true")
 
   pu = sub.add_parser("pullout")
   pu.add_argument("--forward-ft", type=float)
   pu.add_argument("--offset-ft", type=float)
   pu.add_argument("--runout-ft", type=float)
   pu.add_argument("--cruise-mph", type=float)
+  pu.add_argument("--hold-straight", action="store_true")
 
   at = sub.add_parser("arcturn")
   at.add_argument("direction", choices=["left", "right"])
@@ -279,11 +289,14 @@ def main():
       client.abort()
       print("abort sent")
     elif args.cmd == "forward":
-      return _run_motion(client, lambda: client.forward(args.distance_ft, args.cruise_mph))
+      return _run_motion(client, lambda: client.forward(args.distance_ft, args.cruise_mph,
+                                                        hold_straight=args.hold_straight))
     elif args.cmd == "pullover":
-      return _run_motion(client, lambda: client.pullover(args.travel_ft, args.offset_ft, args.runout_ft, args.cruise_mph))
+      return _run_motion(client, lambda: client.pullover(args.travel_ft, args.offset_ft, args.runout_ft,
+                                                         args.cruise_mph, hold_straight=args.hold_straight))
     elif args.cmd == "pullout":
-      return _run_motion(client, lambda: client.pullout(args.forward_ft, args.offset_ft, args.runout_ft, args.cruise_mph))
+      return _run_motion(client, lambda: client.pullout(args.forward_ft, args.offset_ft, args.runout_ft,
+                                                        args.cruise_mph, hold_straight=args.hold_straight))
     elif args.cmd == "arcturn":
       return _run_motion(client, lambda: client.arcturn(args.direction, args.radius_ft, args.angle_deg,
                                                         args.lead_ft, args.tail_ft, args.cruise_mph))
